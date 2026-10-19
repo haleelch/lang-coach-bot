@@ -1,12 +1,11 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const DB_URL = "https://digital-locker-7c539-default-rtdb.asia-southeast1.firebasedatabase.app";
 
-// പുതിയ Firebase Realtime Database URL ഇവിടെ നൽകിയിരിക്കുന്നു
-const DB_URL = "[https://digital-locker-7c539-default-rtdb.asia-southeast1.firebasedatabase.app](https://digital-locker-7c539-default-rtdb.asia-southeast1.firebasedatabase.app)";
 module.exports = async (req, res) => {
   if (req.method !== "POST") {
-    return res.status(200).send("Digital Locker Bot is Active!");
+    return res.status(200).send("Telegram Digital Locker Bot is Active!");
   }
 
   try {
@@ -16,7 +15,7 @@ module.exports = async (req, res) => {
     const chatId = update.message.chat.id;
     const msg = update.message;
 
-    // 1. ഫയലോ ഫോട്ടോയോ അയച്ചാൽ (Certificates അല്ലെങ്കിൽ Kitab Library-ലേക്ക് സേവ് ചെയ്യാൻ)
+    // 1. Files / Certificates / Kitabs send cheyyumbol database-il save cheyyan
     if (msg.document || msg.photo) {
       let fileId = "";
       let fileType = "";
@@ -34,9 +33,9 @@ module.exports = async (req, res) => {
       if (!caption) {
         await sendMessage(
           chatId,
-          "⚠️ **ദയവായി ഫയലിന്റെ കൂടെ ഒരു പേര് (Caption) കൂടി എഴുതി അയക്കൂ!**\n\n" +
-          "• സർട്ടിഫിക്കറ്റ് ആണെങ്കിൽ: വെറുതെ പേര് എഴുതുക (ഉദാ: `SSLC`, `Plus Two`, `RC Book`)\n" +
-          "• കിതാബ്/പുസ്തകം ആണെങ്കിൽ: തുടക്കത്തിൽ `kitab:` എന്ന് ചേർക്കുക (ഉദാ: `kitab: Fathul Mueen`)"
+          "⚠️ **Kripaya file-nte koode oru peru (Caption) koodi ezhuthi ayakku!**\n\n" +
+          "• Certificate anel: Peru mathram ezhuthuka (Uda: `sslc`, `plus two`, `rc book`)\n" +
+          "• Kitab anel: Thudakkathil `kitab:` ennu cherthu ezhuthuka (Uda: `kitab: Fathul Mueen`)"
         );
         return res.status(200).send("OK");
       }
@@ -61,35 +60,26 @@ module.exports = async (req, res) => {
       });
 
       const catName = category === "library" ? "📚 Kitab Library" : "📄 Certificates";
-      await sendMessage(chatId, `✅ **"${title}"** നിങ്ങളുടെ **${catName}**-ലേക്ക് വിജയകരമായി സേവ് ചെയ്തിട്ടുണ്ട്!\n\nഇനി എപ്പോൾ വേണമെങ്കിലും ചാറ്റിൽ ഇതിന്റെ പേര് ചോദിച്ചാൽ ഞാൻ സ്പോട്ടിൽ എടുത്തുതരാം.`);
+      await sendMessage(chatId, `✅ **"${title}"** ningalude **${catName}**-lekku vijayakaramayi save cheythitundu! Ini chat-il ethu samayathum ithu chodichal njan eduthu tharam.`);
       return res.status(200).send("OK");
     }
 
-    // 2. ടെക്സ്റ്റ് മെസ്സേജുകൾ കൈകാര്യം ചെയ്യാൻ
+    // 2. Chat-il text message ayakkumbol
     if (msg.text) {
       const userText = msg.text.trim();
 
       if (userText === "/start") {
-        await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text: "👋 **സ്വാഗതം ഹലീൽ! നിങ്ങളുടെ Digital Locker & Personal Staff തയ്യാറാണ്.**\n\n" +
-                  "🔹 **ഫയൽ സേവ് ചെയ്യാൻ:** ഏത് സർട്ടിഫിക്കറ്റും ഫോട്ടോയും പേര് (Caption) എഴുതി ഇങ്ങോട്ട് അയക്കുക.\n" +
-                  "🔹 **കിതാബ് സേവ് ചെയ്യാൻ:** PDF അയക്കുമ്പോൾ `kitab: പേര്` എന്ന് ക്യാപ്ഷൻ കൊടുക്കുക.\n" +
-                  "🔹 **തിരിച്ചെടുക്കാൻ:** ഏത് ഫയലിന്റെയും നോട്ടിന്റെയും പേര് വെറുതെ ചോദിക്കുക!\n\n" +
-                  "താഴെയുള്ള ബട്ടൺ അമർത്തി നിങ്ങളുടെ മുഴുവൻ പേജുകളും (Notes, Money, Library, Certificates) തുറക്കാം 👇",
-            reply_markup: {
-              inline_keyboard: [
-                [{ text: "📱 Open My Digital Locker (All Pages)", url: "https://lang-coach-bot.vercel.app" }]
-              ]
-            }
-          })
-        });
+        await sendMessage(
+          chatId,
+          "👋 **Swagatham Haleel! Ningalude Personal Staff & Digital Locker ready aanu.**\n\n" +
+          "🔹 **File save cheyyan:** Ethu document-um photo-um perum (Caption) koode ezhuthi ingottu ayakkuka.\n" +
+          "🔹 **Kitab save cheyyan:** PDF ayakkumbol `kitab: peru` ennu caption kodukkuka.\n" +
+          "🔹 **Eduthu tharan:** Ethu file-inteyum note-inteyum peru veruthe chat-il chodikkuka, njan spottil thannicham!"
+        );
         return res.status(200).send("OK");
       }
 
+      // Fetch saved data from Firebase
       const dbRes = await fetch(`${DB_URL}.json`);
       const dbData = (await dbRes.json()) || {};
 
@@ -103,7 +93,7 @@ module.exports = async (req, res) => {
 
       const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
       const prompt = `
-      You are Haleel's personal assistant & digital locker bot.
+      You are Haleel's personal assistant & digital locker bot working entirely inside Telegram chat.
       Here is Haleel's saved data from Firebase:
       - Saved Files (Certificates & Kitabs): ${JSON.stringify(allFiles.map(f => f.title))}
       - Secret Notes & IDs: ${JSON.stringify(notes)}
@@ -115,7 +105,7 @@ module.exports = async (req, res) => {
       STRICT RULES:
       1. If the user is asking for a saved certificate, document, or kitab/book from the "Saved Files" list, reply ONLY with: SEND_FILE:<exact_title_from_list>
       2. If the user is asking about a saved note, ID, password, money/debt calculation, or reminder, answer clearly and accurately in Malayalam using the data above.
-      3. Otherwise, reply helpfully in Malayalam as Haleel's smart personal staff.
+      3. Otherwise, reply helpfully and concisely in Malayalam as Haleel's smart personal staff.
       `;
 
       const result = await model.generateContent(prompt);
@@ -126,9 +116,9 @@ module.exports = async (req, res) => {
         const foundFile = allFiles.find(f => f.title.toLowerCase() === targetTitle || f.title.toLowerCase().includes(targetTitle));
 
         if (foundFile) {
-          await sendFile(chatId, foundFile.fileId, foundFile.fileType, `📄 ഇതാ നിങ്ങളുടെ **${foundFile.title}**`);
+          await sendFile(chatId, foundFile.fileId, foundFile.fileType, `📄 Intha ningalude **${foundFile.title}**`);
         } else {
-          await sendMessage(chatId, `⚠️ ആ ഫയൽ കണ്ടെത്താനായില്ല. ദയവായി ഫയൽ ഒരിക്കൽ കൂടി ക്യാപ്ഷൻ ഇട്ട് അയക്കൂ.`);
+          await sendMessage(chatId, `⚠️ Aa file kandethanayilla. Kripaya orikkal koodi caption ittu file ayakkuka.`);
         }
       } else {
         await sendMessage(chatId, aiReply);
@@ -160,5 +150,4 @@ async function sendFile(chatId, fileId, type, caption) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-    }
-                      
+}
