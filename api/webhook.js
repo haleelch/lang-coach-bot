@@ -3,6 +3,11 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const DB_URL = "https://digital-locker-7c539-default-rtdb.asia-southeast1.firebasedatabase.app";
 
+// Temporary memory to track unlocked users (Chat ID -> Unlocked status)
+const unlockedUsers = new Set();
+
+const SECRET_PIN = "6391";
+
 module.exports = async (req, res) => {
   if (req.method !== "POST") {
     return res.status(200).send("Telegram Digital Locker Bot is Active!");
@@ -11,20 +16,25 @@ module.exports = async (req, res) => {
   try {
     const update = req.body;
     
-    // Inline Button Click cheyyumbol varുന്ന callback_query handle cheyyan
     if (update.callback_query) {
       const q = update.callback_query;
       const chatId = q.message.chat.id;
+      
+      if (!unlockedUsers.has(chatId)) {
+        await sendMessage(chatId, "🔒 <b>Locked! Please enter your PIN (e.g. 6391) to unlock:</b>");
+        return res.status(200).send("OK");
+      }
+
       const data = q.data;
 
       if (data === "menu_certs") {
-        await sendMessage(chatId, "📄 **Certificates Section**\n\nനിങ്ങളുടെ SSLC, Plus Two, Degree തുടങ്ങിയ സർട്ടിഫിക്കറ്റുകളുടെ ഫോട്ടോയോ PDF-ഓ ഇങ്ങോട്ട് അയക്കുക. അയക്കുമ്പോൾ ഒപ്പം ഫയലിന്റെ പേര് (ഉദാ: `SSLC`) Caption ആയി കൊടുക്കുക!");
+        await sendMessage(chatId, "<b>Certificates Section</b>\n\nSend your certificate photo or PDF with a caption name (e.g., SSLC).");
       } else if (data === "menu_library") {
-        await sendMessage(chatId, "📚 **Kitab Library Section**\n\nനിങ്ങളുടെ കിതാബുകളുടെ PDF ഇങ്ങോട്ട് അയക്കുക. അയക്കുമ്പോൾ `kitab: കിതാബിന്റെ പേര്` എന്ന് Caption കൊടുക്കുക!");
+        await sendMessage(chatId, "<b>Kitab Library Section</b>\n\nSend your PDF book with the caption: <code>kitab: Book Name</code>");
       } else if (data === "menu_notes") {
-        await sendMessage(chatId, "📝 **Secret Notes & IDs**\n\nപ്രധാനപ്പെട്ട നമ്പറുകൾ അല്ലെങ്കിൽ പാസ്‌വേഡുകൾ സേവ് ചെയ്യാൻ:\n`note: IGNOU ID - 123456` എന്ന് ടൈപ്പ് ചെയ്ത് അയക്കുക.");
+        await sendMessage(chatId, "<b>Secret Notes & IDs</b>\n\nTo save a note, type:\n<code>note: Title - Your content here</code>");
       } else if (data === "menu_money") {
-        await sendMessage(chatId, "💰 **Money & Debts**\n\nപണമിടപാടുകൾ നോട്ട് ചെയ്യാൻ:\n`debt: Mansoor give 500` അല്ലെങ്കിൽ `debt: Rahul get 1000` എന്ന് ടൈപ്പ് ചെയ്ത് അയക്കുക.");
+        await sendMessage(chatId, "<b>Money Tracker</b>\n\nTo save a record, type:\n<code>debt: Name give/get amount</code>");
       }
 
       return res.status(200).send("OK");
@@ -34,8 +44,28 @@ module.exports = async (req, res) => {
 
     const chatId = update.message.chat.id;
     const msg = update.message;
+    const userText = (msg.text || "").trim();
 
-    // 1. Files / Certificates / Kitabs send cheyyumbol database-il save cheyyan
+    // Check if user is trying to unlock with PIN
+    if (userText === SECRET_PIN) {
+      unlockedUsers.add(chatId);
+      await sendMessage(chatId, "🔓 <b>Unlocked successfully! Welcome Haleel.</b>\n\nType /start to open the menu.");
+      return res.status(200).send("OK");
+    }
+
+    // If not unlocked, demand PIN
+    if (!unlockedUsers.has(chatId)) {
+      await sendMessage(chatId, "🔒 <b>Access Locked!</b>\nPlease enter your 4-digit secret PIN to continue:");
+      return res.status(200).send("OK");
+    }
+
+    // Lock command if user wants to lock it back
+    if (userText.toLowerCase() === "/lock") {
+      unlockedUsers.delete(chatId);
+      await sendMessage(chatId, "🔒 <b>Bot locked successfully!</b>");
+      return res.status(200).send("OK");
+    }
+
     if (msg.document || msg.photo) {
       let fileId = "";
       let fileType = "";
@@ -53,9 +83,9 @@ module.exports = async (req, res) => {
       if (!caption) {
         await sendMessage(
           chatId,
-          "⚠️ **ദയവായി ഫയലിന്റെ കൂടെ ഒരു പേര് (Caption) കൂടി എഴുതി അയക്കൂ!**\n\n" +
-          "• സർട്ടിഫിക്കറ്റ് ആണെങ്കിൽ: വെറുതെ പേര് എഴുതുക (ഉദാ: `sslc`, `plus two`)\n" +
-          "• കിതാബ് ആണെങ്കിൽ: തുടക്കത്തിൽ `kitab:` എന്ന് ചേർക്കുക (ഉദാ: `kitab: Fathul Mueen`)"
+          "⚠️ <b>Please send a name (Caption) along with the file!</b>\n\n" +
+          "• For Certificate: Just write the name (e.g., <code>sslc</code>)\n" +
+          "• For Kitab: Start with <code>kitab:</code> (e.g., <code>kitab: Fathul Mueen</code>)"
         );
         return res.status(200).send("OK");
       }
@@ -79,22 +109,20 @@ module.exports = async (req, res) => {
         })
       });
 
-      const catName = category === "library" ? "📚 Kitab Library" : "📄 Certificates";
-      await sendMessage(chatId, `✅ **"${title}"** നിങ്ങളുടെ **${catName}**-ലേക്ക് വിജയകരമായി സേവ് ചെയ്തിട്ടുണ്ട്! ചാറ്റിൽ എപ്പോൾ വേണമെങ്കിലും ഇത് ചോദിച്ചാൽ ഞാൻ എടുത്തുതരാം.`);
+      const catName = category === "library" ? "Kitab Library" : "Certificates";
+      await sendMessage(chatId, `✅ <b>"${title}"</b> successfully saved to your <b>${catName}</b>!`);
       return res.status(200).send("OK");
     }
 
-    // 2. Chat-il text message ayakkumbol
     if (msg.text) {
-      const userText = msg.text.trim();
-
       if (userText === "/start" || userText.toLowerCase() === "menu") {
         await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             chat_id: chatId,
-            text: "👋 **സ്വാഗതം ഹലീൽ! നിങ്ങളുടെ ഡിജിറ്റൽ ലോക്കർ മെനുവിലേക്ക് സ്വാഗതം.**\n\nതാഴെയുള്ള ബട്ടണുകൾ ഉപയോഗിച്ച് നിങ്ങൾക്ക് ഏത് വിഭാഗത്തിലേക്കും മാറാവുന്നതാണ് 👇",
+            text: "<b>Welcome Haleel</b>",
+            parse_mode: "HTML",
             reply_markup: {
               inline_keyboard: [
                 [
@@ -112,7 +140,6 @@ module.exports = async (req, res) => {
         return res.status(200).send("OK");
       }
 
-      // Note save cheyyunnathe check cheyyan (e.g., note: title - content)
       if (userText.toLowerCase().startsWith("note:")) {
         const contentPart = userText.replace(/^note:/i, "").trim();
         const [nTitle, ...nRest] = contentPart.split("-");
@@ -124,25 +151,22 @@ module.exports = async (req, res) => {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ title: nTitle.trim(), content: nContent, date: new Date().toLocaleDateString("en-IN") })
           });
-          await sendMessage(chatId, `✅ നോട്ട് സേവ് ചെയ്തു: **${nTitle.trim()}**`);
+          await sendMessage(chatId, `✅ Note saved: <b>${nTitle.trim()}</b>`);
           return res.status(200).send("OK");
         }
       }
 
-      // Debt save cheyyunnathe check cheyyan (e.g., debt: name give/get amount)
       if (userText.toLowerCase().startsWith("debt:")) {
         const debtPart = userText.replace(/^debt:/i, "").trim();
-        // Simple parsing
         await fetch(`${DB_URL}/debts.json`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ person: debtPart, date: new Date().toLocaleDateString("en-IN") })
         });
-        await sendMessage(chatId, `✅ കടം / കണക്ക് സേവ് ചെയ്തു: **${debtPart}**`);
+        await sendMessage(chatId, `✅ Record saved: <b>${debtPart}</b>`);
         return res.status(200).send("OK");
       }
 
-      // Fetch saved data from Firebase for AI search
       const dbRes = await fetch(`${DB_URL}.json`);
       const dbData = (await dbRes.json()) || {};
 
@@ -167,8 +191,8 @@ module.exports = async (req, res) => {
 
       STRICT RULES:
       1. If the user is asking for a saved certificate, document, or kitab/book from the "Saved Files" list, reply ONLY with: SEND_FILE:<exact_title_from_list>
-      2. If the user is asking about a saved note, ID, password, money/debt calculation, or reminder, answer clearly and accurately in Malayalam using the data above.
-      3. Otherwise, reply helpfully and concisely in Malayalam as Haleel's smart personal staff.
+      2. If the user is asking about a saved note, ID, password, money/debt calculation, or reminder, answer clearly and accurately using the data above.
+      3. Otherwise, reply helpfully and concisely as Haleel's smart personal staff.
       `;
 
       const result = await model.generateContent(prompt);
@@ -179,9 +203,9 @@ module.exports = async (req, res) => {
         const foundFile = allFiles.find(f => f.title.toLowerCase() === targetTitle || f.title.toLowerCase().includes(targetTitle));
 
         if (foundFile) {
-          await sendFile(chatId, foundFile.fileId, foundFile.fileType, `📄 ഇതാ നിങ്ങളുടെ **${foundFile.title}**`);
+          await sendFile(chatId, foundFile.fileId, foundFile.fileType, `📄 Here is your <b>${foundFile.title}</b>`);
         } else {
-          await sendMessage(chatId, `⚠️ ആ ഫയൽ കണ്ടെത്താനായില്ല. ദയവായി ഫയൽ ഒരിക്കൽ കൂടി ക്യാപ്ഷൻ ഇട്ട് അയക്കൂ.`);
+          await sendMessage(chatId, `⚠️ File not found. Please send it again with a valid caption.`);
         }
       } else {
         await sendMessage(chatId, aiReply);
@@ -199,13 +223,13 @@ async function sendMessage(chatId, text) {
   await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" }),
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
   });
 }
 
 async function sendFile(chatId, fileId, type, caption) {
   const endpoint = type === "photo" ? "sendPhoto" : "sendDocument";
-  const body = { chat_id: chatId, caption, parse_mode: "Markdown" };
+  const body = { chat_id: chatId, caption, parse_mode: "HTML" };
   body[type] = fileId;
 
   await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/${endpoint}`, {
