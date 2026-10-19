@@ -10,6 +10,26 @@ module.exports = async (req, res) => {
 
   try {
     const update = req.body;
+    
+    // Inline Button Click cheyyumbol varുന്ന callback_query handle cheyyan
+    if (update.callback_query) {
+      const q = update.callback_query;
+      const chatId = q.message.chat.id;
+      const data = q.data;
+
+      if (data === "menu_certs") {
+        await sendMessage(chatId, "📄 **Certificates Section**\n\nനിങ്ങളുടെ SSLC, Plus Two, Degree തുടങ്ങിയ സർട്ടിഫിക്കറ്റുകളുടെ ഫോട്ടോയോ PDF-ഓ ഇങ്ങോട്ട് അയക്കുക. അയക്കുമ്പോൾ ഒപ്പം ഫയലിന്റെ പേര് (ഉദാ: `SSLC`) Caption ആയി കൊടുക്കുക!");
+      } else if (data === "menu_library") {
+        await sendMessage(chatId, "📚 **Kitab Library Section**\n\nനിങ്ങളുടെ കിതാബുകളുടെ PDF ഇങ്ങോട്ട് അയക്കുക. അയക്കുമ്പോൾ `kitab: കിതാബിന്റെ പേര്` എന്ന് Caption കൊടുക്കുക!");
+      } else if (data === "menu_notes") {
+        await sendMessage(chatId, "📝 **Secret Notes & IDs**\n\nപ്രധാനപ്പെട്ട നമ്പറുകൾ അല്ലെങ്കിൽ പാസ്‌വേഡുകൾ സേവ് ചെയ്യാൻ:\n`note: IGNOU ID - 123456` എന്ന് ടൈപ്പ് ചെയ്ത് അയക്കുക.");
+      } else if (data === "menu_money") {
+        await sendMessage(chatId, "💰 **Money & Debts**\n\nപണമിടപാടുകൾ നോട്ട് ചെയ്യാൻ:\n`debt: Mansoor give 500` അല്ലെങ്കിൽ `debt: Rahul get 1000` എന്ന് ടൈപ്പ് ചെയ്ത് അയക്കുക.");
+      }
+
+      return res.status(200).send("OK");
+    }
+
     if (!update.message) return res.status(200).send("OK");
 
     const chatId = update.message.chat.id;
@@ -33,9 +53,9 @@ module.exports = async (req, res) => {
       if (!caption) {
         await sendMessage(
           chatId,
-          "⚠️ **Kripaya file-nte koode oru peru (Caption) koodi ezhuthi ayakku!**\n\n" +
-          "• Certificate anel: Peru mathram ezhuthuka (Uda: `sslc`, `plus two`, `rc book`)\n" +
-          "• Kitab anel: Thudakkathil `kitab:` ennu cherthu ezhuthuka (Uda: `kitab: Fathul Mueen`)"
+          "⚠️ **ദയവായി ഫയലിന്റെ കൂടെ ഒരു പേര് (Caption) കൂടി എഴുതി അയക്കൂ!**\n\n" +
+          "• സർട്ടിഫിക്കറ്റ് ആണെങ്കിൽ: വെറുതെ പേര് എഴുതുക (ഉദാ: `sslc`, `plus two`)\n" +
+          "• കിതാബ് ആണെങ്കിൽ: തുടക്കത്തിൽ `kitab:` എന്ന് ചേർക്കുക (ഉദാ: `kitab: Fathul Mueen`)"
         );
         return res.status(200).send("OK");
       }
@@ -60,7 +80,7 @@ module.exports = async (req, res) => {
       });
 
       const catName = category === "library" ? "📚 Kitab Library" : "📄 Certificates";
-      await sendMessage(chatId, `✅ **"${title}"** ningalude **${catName}**-lekku vijayakaramayi save cheythitundu! Ini chat-il ethu samayathum ithu chodichal njan eduthu tharam.`);
+      await sendMessage(chatId, `✅ **"${title}"** നിങ്ങളുടെ **${catName}**-ലേക്ക് വിജയകരമായി സേവ് ചെയ്തിട്ടുണ്ട്! ചാറ്റിൽ എപ്പോൾ വേണമെങ്കിലും ഇത് ചോദിച്ചാൽ ഞാൻ എടുത്തുതരാം.`);
       return res.status(200).send("OK");
     }
 
@@ -68,18 +88,61 @@ module.exports = async (req, res) => {
     if (msg.text) {
       const userText = msg.text.trim();
 
-      if (userText === "/start") {
-        await sendMessage(
-          chatId,
-          "👋 **Swagatham Haleel! Ningalude Personal Staff & Digital Locker ready aanu.**\n\n" +
-          "🔹 **File save cheyyan:** Ethu document-um photo-um perum (Caption) koode ezhuthi ingottu ayakkuka.\n" +
-          "🔹 **Kitab save cheyyan:** PDF ayakkumbol `kitab: peru` ennu caption kodukkuka.\n" +
-          "🔹 **Eduthu tharan:** Ethu file-inteyum note-inteyum peru veruthe chat-il chodikkuka, njan spottil thannicham!"
-        );
+      if (userText === "/start" || userText.toLowerCase() === "menu") {
+        await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: "👋 **സ്വാഗതം ഹലീൽ! നിങ്ങളുടെ ഡിജിറ്റൽ ലോക്കർ മെനുവിലേക്ക് സ്വാഗതം.**\n\nതാഴെയുള്ള ബട്ടണുകൾ ഉപയോഗിച്ച് നിങ്ങൾക്ക് ഏത് വിഭാഗത്തിലേക്കും മാറാവുന്നതാണ് 👇",
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: "📄 Certificates", callback_data: "menu_certs" },
+                  { text: "📚 Kitab Library", callback_data: "menu_library" }
+                ],
+                [
+                  { text: "📝 Secret Notes", callback_data: "menu_notes" },
+                  { text: "💰 Money Tracker", callback_data: "menu_money" }
+                ]
+              ]
+            }
+          })
+        });
         return res.status(200).send("OK");
       }
 
-      // Fetch saved data from Firebase
+      // Note save cheyyunnathe check cheyyan (e.g., note: title - content)
+      if (userText.toLowerCase().startsWith("note:")) {
+        const contentPart = userText.replace(/^note:/i, "").trim();
+        const [nTitle, ...nRest] = contentPart.split("-");
+        const nContent = nRest.join("-").trim();
+
+        if (nTitle && nContent) {
+          await fetch(`${DB_URL}/notes.json`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title: nTitle.trim(), content: nContent, date: new Date().toLocaleDateString("en-IN") })
+          });
+          await sendMessage(chatId, `✅ നോട്ട് സേവ് ചെയ്തു: **${nTitle.trim()}**`);
+          return res.status(200).send("OK");
+        }
+      }
+
+      // Debt save cheyyunnathe check cheyyan (e.g., debt: name give/get amount)
+      if (userText.toLowerCase().startsWith("debt:")) {
+        const debtPart = userText.replace(/^debt:/i, "").trim();
+        // Simple parsing
+        await fetch(`${DB_URL}/debts.json`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ person: debtPart, date: new Date().toLocaleDateString("en-IN") })
+        });
+        await sendMessage(chatId, `✅ കടം / കണക്ക് സേവ് ചെയ്തു: **${debtPart}**`);
+        return res.status(200).send("OK");
+      }
+
+      // Fetch saved data from Firebase for AI search
       const dbRes = await fetch(`${DB_URL}.json`);
       const dbData = (await dbRes.json()) || {};
 
@@ -116,9 +179,9 @@ module.exports = async (req, res) => {
         const foundFile = allFiles.find(f => f.title.toLowerCase() === targetTitle || f.title.toLowerCase().includes(targetTitle));
 
         if (foundFile) {
-          await sendFile(chatId, foundFile.fileId, foundFile.fileType, `📄 Intha ningalude **${foundFile.title}**`);
+          await sendFile(chatId, foundFile.fileId, foundFile.fileType, `📄 ഇതാ നിങ്ങളുടെ **${foundFile.title}**`);
         } else {
-          await sendMessage(chatId, `⚠️ Aa file kandethanayilla. Kripaya orikkal koodi caption ittu file ayakkuka.`);
+          await sendMessage(chatId, `⚠️ ആ ഫയൽ കണ്ടെത്താനായില്ല. ദയവായി ഫയൽ ഒരിക്കൽ കൂടി ക്യാപ്ഷൻ ഇട്ട് അയക്കൂ.`);
         }
       } else {
         await sendMessage(chatId, aiReply);
