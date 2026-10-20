@@ -2,11 +2,527 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const DB_URL = "https://digital-locker-7c539-default-rtdb.asia-southeast1.firebasedatabase.app";
-
-// Temporary memory to track unlocked users (Chat ID -> Unlocked status)
-const unlockedUsers = new Set();
+const API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 
 const SECRET_PIN = "6391";
+const AUTO_LOCK_MS = 10 * 60 * 1000; // 10 min idle -> locks itself
+
+const WELCOME = "<b>Welcome Haleel</b>";
+
+const MAIN_MENU = {
+  inline_keyboard: [
+    [
+      { text: "📄 Certificates", callback_data: "menu_certs" },
+      { text: "📚 Kitab Library", callback_data: "menu_library" },
+    ],
+    [
+      { text: "📝 Secret Notes", callback_data: "menu_notes" },
+      { text: "💰 Money Tracker", callback_data: "menu_money" },
+    ],
+  ],
+};
+
+const BACK = { inline_keyboard: [[{ text: "⬅️ Menu", callback_data: "menu_home" }]] };
+
+const SECTIONS = {
+  certs: {
+    title: "📄 Certificates",
+    help: "📎 Send a file/photo to add (name as caption, or I'll ask).\n🔢 Tap a number to open · or type a name to search.",
+  },
+  library: {
+    title: "📚 Kitab Library",
+    help: "📎 Send a PDF to add (book name as caption, or I'll ask).\n🔢 Tap a number to open · or type a name to search.",
+  },
+  notes: {
+    title: "📝 Secret Notes & IDs",
+    help: "✍️ Type anything to add a note (first line = title).\n🔢 Tap a number to open.",
+  },
+  money: {
+    title: "💰 Money Tracker",
+    help: "✍️ Type <code>Name give 500</code> or <code>Name get 500</code> to add.\n🔢 Tap a number to open.",
+  },
+};
+
+const NODE = { certs: "certificates", library: "library", notes: "notes", money: "debts" };
+const PAGE_SIZE = 6;
+
+// ---------- helpers ----------
+
+const today = () => new Date().toLocaleDateString("en-IN");
+const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+async function tg(method, body) {
+  try {
+    const r = await fetch(`${API}/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return await r.json();
+  } catch (e) {
+    console.error(method, e);
+    return {};
+  }
+}
+
+const del = (chatId, id) => (id ? tg("deleteMessage", { chat_id: chatId, message_id: id }) : null);
+
+async function send(chatId, text, extra = {}) {
+  const r = await tg("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", ...extra });
+  return r.result && r.result.message_id;
+}
+
+async function sendFile(chatId, fileId, type, caption) {
+  const endpoint = type === "photo" ? "sendPhoto" : "sendDocument";
+  const r = await tg(endpoint, { chat_id: chatId, caption, parse_mode: "HTML", [type]: fileId });
+  return r.result && r.result.message_id;
+}
+
+// Edit the single "panel" message in place (so chat stays clean). Sends a new one if needed.
+async function showPanel(chatId, s, text, markup) {
+  if (s.menuId) {
+    const r = await tg("editMessageText", {
+      chat_id: chatId,
+      message_id: s.menuId,
+      text,
+      parse_mode: "HTML",
+      reply_markup: markup,
+    });
+    if (r.ok || (r.description || "").includes("not modified")) return;
+  }
+  s.menuId = await send(chatId, text, { reply_markup: markup });
+}
+
+// Delete everything the bot/user left in chat during the session
+async function wipe(chatId, s) {
+  const ids = [...(s.trash || [])];
+  if (s.menuId) ids.push(s.menuId);
+  await Promise.all(ids.map((id) => del(chatId, id)));
+}
+
+// Session state lives in Firebase (Vercel memory resets between requests)
+async function getSession(chatId) {
+  try {
+    const r = await fetch(`${DB_URL}/sessions/${chatId}.json`);
+    return (await r.json()) || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+async function putSession(chatId, s) {
+  await fetch(`${DB_URL}/sessions/${chatId}.json`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(s),
+  });
+}
+
+async function dbPost(path, data) {
+  await fetch(`${DB_URL}/${path}.json`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+async function dbGet(path) {
+  const r = await fetch(`${DB_URL}/${path}.json`);
+  return r.json();
+}
+
+async function dbPatch(path, data) {
+  await fetch(`${DB_URL}/${path}.json`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+async function dbDelete(path) {
+  await fetch(`${DB_URL}/${path}.json`, { method: "DELETE" });
+}
+
+const fmt = (n) => Number(n || 0).toLocaleString("en-IN");
+const moneyLine = (it) => (it.type ? `${it.person} ${it.type} ₹${fmt(it.amount)}` : it.person || "Record");
+
+function itemTitle(key, it) {
+  if (key === "money") return moneyLine(it) + (it.settled ? " ✅" : "");
+  return it.title || "Untitled";
+}
+
+// Any text can be a note: first line = title, rest = content
+function parseNote(text) {
+  const lines = text.split("\n");
+  if (lines.length > 1) {
+    return { title: lines[0].trim().slice(0, 80), content: lines.slice(1).join("\n").trim() };
+  }
+  const m = text.match(/^(.{1,80}?)\s+-\s+(.+)$/);
+  if (m) return { title: m[1].trim(), content: m[2].trim() };
+  if (text.length > 40) return { title: text.slice(0, 40).trim() + "…", content: text };
+  return { title: text, content: "" };
+}
+
+// "Name give 500" / "Name get ₹1,000"
+function parseMoney(text) {
+  const m = text.match(/^(.+?)\s+(give|get)\s*₹?\s*([\d,]+(?:\.\d+)?)\s*$/i);
+  if (!m) return null;
+  return { person: m[1].trim(), type: m[2].toLowerCase(), amount: Number(m[3].replace(/,/g, "")) };
+}
+
+function moneyTotals(items) {
+  let give = 0;
+  let get = 0;
+  const people = {}; // pending only; give = +, get = -
+  items.forEach((it) => {
+    if (!it.type || it.settled) return;
+    const amt = Number(it.amount) || 0;
+    const name = String(it.person || "").trim();
+    const k = name.toLowerCase();
+    if (!people[k]) people[k] = { name, net: 0 };
+    if (it.type === "give") {
+      give += amt;
+      people[k].net += amt;
+    } else {
+      get += amt;
+      people[k].net -= amt;
+    }
+  });
+
+  const net = give - get;
+  let out = `🔴 Total to give: ₹${fmt(give)}\n🟢 Total to get: ₹${fmt(get)}\n`;
+  out += net === 0 ? "⚖️ Net: ₹0\n" : net > 0 ? `⚖️ Net: you give ₹${fmt(net)}\n` : `⚖️ Net: you get ₹${fmt(-net)}\n`;
+
+  const rows = Object.values(people).filter((p) => p.net !== 0);
+  if (rows.length) {
+    out += "\n<b>By person</b>\n";
+    rows.forEach((p) => {
+      out += `• ${esc(p.name)} — ${p.net > 0 ? "give" : "get"} ₹${fmt(Math.abs(p.net))}\n`;
+    });
+  }
+  return out;
+}
+
+function listKeyboard(key, slice, page, pages) {
+  const rows = [];
+  for (let i = 0; i < slice.length; i += 3) {
+    rows.push(
+      slice.slice(i, i + 3).map((it, j) => ({
+        text: String(i + j + 1),
+        callback_data: `o:${key}:${it.id}:${page}`,
+      }))
+    );
+  }
+  if (pages > 1) {
+    rows.push([
+      { text: "⬅️", callback_data: `p:${key}:${Math.max(0, page - 1)}` },
+      { text: `${page + 1}/${pages}`, callback_data: `p:${key}:${page}` },
+      { text: "➡️", callback_data: `p:${key}:${Math.min(pages - 1, page + 1)}` },
+    ]);
+  }
+  rows.push([{ text: "⬅️ Menu", callback_data: "menu_home" }]);
+  return { inline_keyboard: rows };
+}
+
+// Section page: cards (title, preview, date) newest first, 6 per page
+async function showList(chatId, s, key, page = 0, flash = "") {
+  const data = (await dbGet(NODE[key])) || {};
+  const items = Object.entries(data)
+    .map(([id, v]) => ({ ...v, id }))
+    .reverse();
+  const pages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  page = Math.min(Math.max(page, 0), pages - 1);
+  const slice = items.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const sec = SECTIONS[key];
+
+  let text = flash ? `${flash}\n\n` : "";
+  text += `<b>${sec.title}</b> · ${items.length}${pages > 1 ? ` · page ${page + 1}/${pages}` : ""}\n`;
+  if (key === "money") text += moneyTotals(items);
+  text += "\n";
+  if (!slice.length) text += "<i>Nothing saved yet.</i>\n\n";
+  slice.forEach((it, i) => {
+    text += `<b>${i + 1}. ${esc(itemTitle(key, it))}</b>\n`;
+    if (key === "notes" && it.content) text += `${esc(String(it.content).replace(/\s+/g, " ").slice(0, 60))}\n`;
+    text += `📅 ${esc(it.date || "")}\n\n`;
+  });
+  text += sec.help;
+  await showPanel(chatId, s, text, listKeyboard(key, slice, page, pages));
+}
+
+// Single item page with actions
+async function showItem(chatId, s, key, id, page) {
+  const it = await dbGet(`${NODE[key]}/${id}`);
+  if (!it) return showList(chatId, s, key, page, "⚠️ Not found");
+
+  let text;
+  const rows = [];
+  if (key === "notes") {
+    text = `<b>${esc(it.title || "Untitled")}</b>${it.content ? "\n\n" + esc(String(it.content).slice(0, 3500)) : ""}\n\n📅 ${esc(it.date || "")}`;
+    rows.push([
+      { text: "✏️ Edit", callback_data: `e:${key}:${id}:${page}` },
+      { text: "🗑 Delete", callback_data: `d:${key}:${id}:${page}` },
+    ]);
+  } else if (key === "money") {
+    text = `<b>${esc(moneyLine(it))}</b>\n${it.settled ? "✅ Settled" : "⏳ Pending"}\n\n📅 ${esc(it.date || "")}`;
+    rows.push([
+      { text: it.settled ? "↩️ Reopen" : "✅ Mark settled", callback_data: `s:${key}:${id}:${page}` },
+      { text: "🗑 Delete", callback_data: `d:${key}:${id}:${page}` },
+    ]);
+  } else {
+    text = `<b>${esc(it.title || "Untitled")}</b>\n\n📅 ${esc(it.date || "")}`;
+    rows.push([
+      { text: "📤 Send file", callback_data: `f:${key}:${id}:${page}` },
+      { text: "🗑 Delete", callback_data: `d:${key}:${id}:${page}` },
+    ]);
+  }
+  rows.push([{ text: "⬅️ Back", callback_data: `p:${key}:${page}` }]);
+  await showPanel(chatId, s, text, { inline_keyboard: rows });
+}
+
+async function storeFile(chatId, s, p, title) {
+  await dbPost(p.category, { title, fileId: p.fileId, fileType: p.fileType, date: today() });
+  const key = p.category === "library" ? "library" : "certs";
+  s.mode = key;
+  await showList(chatId, s, key, 0, `✅ Saved: <b>${esc(title)}</b>`);
+}
+
+// ---------- main logic ----------
+
+async function handleUpdate(update, chatId, s) {
+  const now = Date.now();
+  const cb = update.callback_query;
+  const msg = update.message;
+  const unlocked = s.unlocked && now - (s.last || 0) < AUTO_LOCK_MS;
+
+  // ===== LOCKED =====
+  if (!unlocked) {
+    if (cb) {
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "🔒 Locked. Send your PIN.", show_alert: true });
+      return s;
+    }
+    // Whatever was typed (PIN or wrong PIN) is removed from chat immediately
+    await del(chatId, msg.message_id);
+    await wipe(chatId, s); // old session leftovers disappear
+
+    const text = (msg.text || "").trim();
+    if (text === SECRET_PIN) {
+      const n = { unlocked: true, last: now, trash: [] };
+      await showPanel(chatId, n, WELCOME, MAIN_MENU);
+      return n;
+    }
+    const id = await send(chatId, "🔒 <b>Access Locked!</b>\nSend your 4-digit PIN to continue:");
+    return { unlocked: false, trash: id ? [id] : [] };
+  }
+
+  // ===== UNLOCKED =====
+  s.last = now;
+  s.trash = s.trash || [];
+
+  // --- menu buttons ---
+  if (cb) {
+    await tg("answerCallbackQuery", { callback_query_id: cb.id });
+    s.menuId = cb.message.message_id;
+    const d = cb.data;
+    const [op, key, a, b] = d.split(":");
+    s.pending = null;
+    if (op !== "e") s.editing = null;
+
+    if (d === "menu_home") {
+      s.mode = null;
+      await showPanel(chatId, s, WELCOME, MAIN_MENU);
+    } else if (d.startsWith("menu_")) {
+      const k = d.slice(5);
+      if (SECTIONS[k]) {
+        s.mode = k;
+        await showList(chatId, s, k, 0);
+      }
+    } else if (SECTIONS[key]) {
+      s.mode = key;
+      const page = Number(op === "p" ? a : b) || 0;
+
+      if (op === "p") {
+        await showList(chatId, s, key, page);
+      } else if (op === "o") {
+        await showItem(chatId, s, key, a, page);
+      } else if (op === "e") {
+        s.editing = { id: a, page };
+        await showPanel(chatId, s, "✏️ Send the new text for this note:", {
+          inline_keyboard: [[{ text: "Cancel", callback_data: `o:${key}:${a}:${page}` }]],
+        });
+      } else if (op === "d") {
+        const it = await dbGet(`${NODE[key]}/${a}`);
+        if (it) {
+          await showPanel(chatId, s, `🗑 Delete <b>${esc(itemTitle(key, it))}</b>?\nThis cannot be undone.`, {
+            inline_keyboard: [
+              [
+                { text: "🗑 Yes, delete", callback_data: `y:${key}:${a}:${page}` },
+                { text: "Cancel", callback_data: `o:${key}:${a}:${page}` },
+              ],
+            ],
+          });
+        } else {
+          await showList(chatId, s, key, page);
+        }
+      } else if (op === "y") {
+        await dbDelete(`${NODE[key]}/${a}`);
+        await showList(chatId, s, key, page, "🗑 Deleted");
+      } else if (op === "s") {
+        const it = await dbGet(`${NODE[key]}/${a}`);
+        if (it) await dbPatch(`${NODE[key]}/${a}`, { settled: !it.settled });
+        await showItem(chatId, s, key, a, page);
+      } else if (op === "f") {
+        const it = await dbGet(`${NODE[key]}/${a}`);
+        if (it && it.fileId) {
+          const mid = await sendFile(chatId, it.fileId, it.fileType, `📄 <b>${esc(it.title || "")}</b>`);
+          if (mid) s.trash.push(mid);
+        }
+      }
+    }
+    return s;
+  }
+
+  if (!msg) return s;
+  const text = (msg.text || "").trim();
+  const lower = text.toLowerCase();
+
+  // --- /lock ---
+  if (lower === "/lock") {
+    await del(chatId, msg.message_id);
+    await wipe(chatId, s);
+    const id = await send(chatId, "🔒 <b>Bot locked successfully!</b>");
+    return { unlocked: false, trash: id ? [id] : [] };
+  }
+
+  // --- /start or menu: fresh clean menu ---
+  if (text === "/start" || lower === "menu") {
+    await del(chatId, msg.message_id);
+    await wipe(chatId, s);
+    const n = { unlocked: true, last: now, trash: [] };
+    await showPanel(chatId, n, WELCOME, MAIN_MENU);
+    return n;
+  }
+
+  // --- file / photo upload ---
+  if (msg.document || msg.photo) {
+    const fileType = msg.document ? "document" : "photo";
+    const fileId = msg.document ? msg.document.file_id : msg.photo[msg.photo.length - 1].file_id;
+    const caption = (msg.caption || "").trim();
+
+    let category = s.mode === "library" ? "library" : "certificates";
+    let title = caption;
+    if (/^(kitab:|book:)/i.test(caption)) {
+      category = "library";
+      title = caption.replace(/^(kitab:|book:)/i, "").trim();
+    }
+
+    await del(chatId, msg.message_id); // upload disappears from chat
+
+    if (!title) {
+      s.pending = { fileId, fileType, category };
+      await showPanel(chatId, s, "📎 File received.\n\n✏️ Now type a <b>name</b> for it:", BACK);
+      return s;
+    }
+    await storeFile(chatId, s, { fileId, fileType, category }, title);
+    return s;
+  }
+
+  if (!text) return s;
+
+  // --- name for a file that was sent without caption ---
+  if (s.pending) {
+    await del(chatId, msg.message_id);
+    const p = s.pending;
+    s.pending = null;
+    await storeFile(chatId, s, p, text);
+    return s;
+  }
+
+  // --- edit an existing note ---
+  if (s.editing) {
+    await del(chatId, msg.message_id);
+    const ed = s.editing;
+    s.editing = null;
+    await dbPatch(`notes/${ed.id}`, parseNote(text));
+    await showItem(chatId, s, "notes", ed.id, ed.page);
+    return s;
+  }
+
+  // --- add note (any text) ---
+  if (s.mode === "notes" || lower.startsWith("note:")) {
+    await del(chatId, msg.message_id);
+    s.mode = "notes";
+    const body = text.replace(/^note:/i, "").trim();
+    if (!body) {
+      await showList(chatId, s, "notes", 0, "⚠️ Type some text to save.");
+      return s;
+    }
+    const n = parseNote(body);
+    await dbPost("notes", { ...n, date: today() });
+    await showList(chatId, s, "notes", 0, `✅ Saved: <b>${esc(n.title)}</b>`);
+    return s;
+  }
+
+  // --- add money record: "Name give 500" / "Name get 500" ---
+  if (s.mode === "money" || lower.startsWith("debt:")) {
+    await del(chatId, msg.message_id);
+    s.mode = "money";
+    const rec = parseMoney(text.replace(/^debt:/i, "").trim());
+    if (!rec) {
+      await showList(chatId, s, "money", 0, "⚠️ Format: <code>Name give 500</code> or <code>Name get 500</code>");
+      return s;
+    }
+    await dbPost("debts", { ...rec, settled: false, date: today() });
+    await showList(chatId, s, "money", 0, `✅ Saved: <b>${esc(moneyLine(rec))}</b>`);
+    return s;
+  }
+
+  // --- search / ask (certificates, library, or no section selected) ---
+  s.trash.push(msg.message_id); // query + answer get wiped on lock / next unlock
+
+  const [certs, books, notes, debts, reminders] = await Promise.all(
+    ["certificates", "library", "notes", "debts", "reminders"].map(async (k) => {
+      const r = await fetch(`${DB_URL}/${k}.json`);
+      return Object.values((await r.json()) || {});
+    })
+  );
+  const allFiles = [...certs, ...books];
+
+  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  const prompt = `
+  You are Haleel's personal assistant & digital locker bot working entirely inside Telegram chat.
+  Here is Haleel's saved data from Firebase:
+  - Saved Files (Certificates & Kitabs): ${JSON.stringify(allFiles.map((f) => f.title))}
+  - Secret Notes & IDs: ${JSON.stringify(notes)}
+  - Money / Debts: ${JSON.stringify(debts)}
+  - Reminders: ${JSON.stringify(reminders)}
+
+  User message: "${text}"
+
+  STRICT RULES:
+  1. If the user is asking for a saved certificate, document, or kitab/book from the "Saved Files" list, reply ONLY with: SEND_FILE:<exact_title_from_list>
+  2. If the user is asking about a saved note, ID, password, money/debt calculation, or reminder, answer clearly and accurately using the data above.
+  3. Otherwise, reply helpfully and concisely as Haleel's smart personal staff.
+  `;
+
+  const result = await model.generateContent(prompt);
+  const aiReply = result.response.text().trim();
+
+  let outId;
+  if (aiReply.startsWith("SEND_FILE:")) {
+    const target = aiReply.replace("SEND_FILE:", "").trim().toLowerCase();
+    const found = allFiles.find((f) => f.title.toLowerCase() === target || f.title.toLowerCase().includes(target));
+    if (found) {
+      outId = await sendFile(chatId, found.fileId, found.fileType, `📄 Here is your <b>${esc(found.title)}</b>`);
+    } else {
+      outId = await send(chatId, "⚠️ File not found. Please add it again from the menu.");
+    }
+  } else {
+    outId = await send(chatId, esc(aiReply));
+  }
+  if (outId) s.trash.push(outId);
+  s.trash = s.trash.slice(-100);
+  return s;
+}
 
 module.exports = async (req, res) => {
   if (req.method !== "POST") {
@@ -15,226 +531,22 @@ module.exports = async (req, res) => {
 
   try {
     const update = req.body;
-    
-    if (update.callback_query) {
-      const q = update.callback_query;
-      const chatId = q.message.chat.id;
-      
-      if (!unlockedUsers.has(chatId)) {
-        await sendMessage(chatId, "🔒 <b>Locked! Please enter your PIN (e.g. 6391) to unlock:</b>");
-        return res.status(200).send("OK");
-      }
+    const chatId = update.callback_query
+      ? update.callback_query.message.chat.id
+      : update.message && update.message.chat.id;
+    if (!chatId) return res.status(200).send("OK");
 
-      const data = q.data;
-
-      if (data === "menu_certs") {
-        await sendMessage(chatId, "<b>Certificates Section</b>\n\nSend your certificate photo or PDF with a caption name (e.g., SSLC).");
-      } else if (data === "menu_library") {
-        await sendMessage(chatId, "<b>Kitab Library Section</b>\n\nSend your PDF book with the caption: <code>kitab: Book Name</code>");
-      } else if (data === "menu_notes") {
-        await sendMessage(chatId, "<b>Secret Notes & IDs</b>\n\nTo save a note, type:\n<code>note: Title - Your content here</code>");
-      } else if (data === "menu_money") {
-        await sendMessage(chatId, "<b>Money Tracker</b>\n\nTo save a record, type:\n<code>debt: Name give/get amount</code>");
-      }
-
+    // Optional: only your own Telegram account can use the bot
+    if (process.env.OWNER_CHAT_ID && String(chatId) !== process.env.OWNER_CHAT_ID) {
       return res.status(200).send("OK");
     }
 
-    if (!update.message) return res.status(200).send("OK");
-
-    const chatId = update.message.chat.id;
-    const msg = update.message;
-    const userText = (msg.text || "").trim();
-
-    // Check if user is trying to unlock with PIN
-    if (userText === SECRET_PIN) {
-      unlockedUsers.add(chatId);
-      await sendMessage(chatId, "🔓 <b>Unlocked successfully! Welcome Haleel.</b>\n\nType /start to open the menu.");
-      return res.status(200).send("OK");
-    }
-
-    // If not unlocked, demand PIN
-    if (!unlockedUsers.has(chatId)) {
-      await sendMessage(chatId, "🔒 <b>Access Locked!</b>\nPlease enter your 4-digit secret PIN to continue:");
-      return res.status(200).send("OK");
-    }
-
-    // Lock command if user wants to lock it back
-    if (userText.toLowerCase() === "/lock") {
-      unlockedUsers.delete(chatId);
-      await sendMessage(chatId, "🔒 <b>Bot locked successfully!</b>");
-      return res.status(200).send("OK");
-    }
-
-    if (msg.document || msg.photo) {
-      let fileId = "";
-      let fileType = "";
-
-      if (msg.document) {
-        fileId = msg.document.file_id;
-        fileType = "document";
-      } else if (msg.photo) {
-        fileId = msg.photo[msg.photo.length - 1].file_id;
-        fileType = "photo";
-      }
-
-      const caption = (msg.caption || "").trim();
-
-      if (!caption) {
-        await sendMessage(
-          chatId,
-          "⚠️ <b>Please send a name (Caption) along with the file!</b>\n\n" +
-          "• For Certificate: Just write the name (e.g., <code>sslc</code>)\n" +
-          "• For Kitab: Start with <code>kitab:</code> (e.g., <code>kitab: Fathul Mueen</code>)"
-        );
-        return res.status(200).send("OK");
-      }
-
-      let category = "certificates";
-      let title = caption;
-
-      if (caption.toLowerCase().startsWith("kitab:") || caption.toLowerCase().startsWith("book:")) {
-        category = "library";
-        title = caption.replace(/^(kitab:|book:)/i, "").trim();
-      }
-
-      await fetch(`${DB_URL}/${category}.json`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: title,
-          fileId: fileId,
-          fileType: fileType,
-          date: new Date().toLocaleDateString("en-IN")
-        })
-      });
-
-      const catName = category === "library" ? "Kitab Library" : "Certificates";
-      await sendMessage(chatId, `✅ <b>"${title}"</b> successfully saved to your <b>${catName}</b>!`);
-      return res.status(200).send("OK");
-    }
-
-    if (msg.text) {
-      if (userText === "/start" || userText.toLowerCase() === "menu") {
-        await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text: "<b>Welcome Haleel</b>",
-            parse_mode: "HTML",
-            reply_markup: {
-              inline_keyboard: [
-                [
-                  { text: "📄 Certificates", callback_data: "menu_certs" },
-                  { text: "📚 Kitab Library", callback_data: "menu_library" }
-                ],
-                [
-                  { text: "📝 Secret Notes", callback_data: "menu_notes" },
-                  { text: "💰 Money Tracker", callback_data: "menu_money" }
-                ]
-              ]
-            }
-          })
-        });
-        return res.status(200).send("OK");
-      }
-
-      if (userText.toLowerCase().startsWith("note:")) {
-        const contentPart = userText.replace(/^note:/i, "").trim();
-        const [nTitle, ...nRest] = contentPart.split("-");
-        const nContent = nRest.join("-").trim();
-
-        if (nTitle && nContent) {
-          await fetch(`${DB_URL}/notes.json`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ title: nTitle.trim(), content: nContent, date: new Date().toLocaleDateString("en-IN") })
-          });
-          await sendMessage(chatId, `✅ Note saved: <b>${nTitle.trim()}</b>`);
-          return res.status(200).send("OK");
-        }
-      }
-
-      if (userText.toLowerCase().startsWith("debt:")) {
-        const debtPart = userText.replace(/^debt:/i, "").trim();
-        await fetch(`${DB_URL}/debts.json`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ person: debtPart, date: new Date().toLocaleDateString("en-IN") })
-        });
-        await sendMessage(chatId, `✅ Record saved: <b>${debtPart}</b>`);
-        return res.status(200).send("OK");
-      }
-
-      const dbRes = await fetch(`${DB_URL}.json`);
-      const dbData = (await dbRes.json()) || {};
-
-      const certs = Object.values(dbData.certificates || {});
-      const books = Object.values(dbData.library || {});
-      const notes = Object.values(dbData.notes || {});
-      const debts = Object.values(dbData.debts || {});
-      const reminders = Object.values(dbData.reminders || {});
-
-      const allFiles = [...certs, ...books];
-
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-      const prompt = `
-      You are Haleel's personal assistant & digital locker bot working entirely inside Telegram chat.
-      Here is Haleel's saved data from Firebase:
-      - Saved Files (Certificates & Kitabs): ${JSON.stringify(allFiles.map(f => f.title))}
-      - Secret Notes & IDs: ${JSON.stringify(notes)}
-      - Money / Debts: ${JSON.stringify(debts)}
-      - Reminders: ${JSON.stringify(reminders)}
-
-      User message: "${userText}"
-
-      STRICT RULES:
-      1. If the user is asking for a saved certificate, document, or kitab/book from the "Saved Files" list, reply ONLY with: SEND_FILE:<exact_title_from_list>
-      2. If the user is asking about a saved note, ID, password, money/debt calculation, or reminder, answer clearly and accurately using the data above.
-      3. Otherwise, reply helpfully and concisely as Haleel's smart personal staff.
-      `;
-
-      const result = await model.generateContent(prompt);
-      const aiReply = result.response.text().trim();
-
-      if (aiReply.startsWith("SEND_FILE:")) {
-        const targetTitle = aiReply.replace("SEND_FILE:", "").trim().toLowerCase();
-        const foundFile = allFiles.find(f => f.title.toLowerCase() === targetTitle || f.title.toLowerCase().includes(targetTitle));
-
-        if (foundFile) {
-          await sendFile(chatId, foundFile.fileId, foundFile.fileType, `📄 Here is your <b>${foundFile.title}</b>`);
-        } else {
-          await sendMessage(chatId, `⚠️ File not found. Please send it again with a valid caption.`);
-        }
-      } else {
-        await sendMessage(chatId, aiReply);
-      }
-    }
-
-    res.status(200).send("OK");
+    const s = await getSession(chatId);
+    const next = await handleUpdate(update, chatId, s);
+    await putSession(chatId, next);
   } catch (error) {
     console.error(error);
-    res.status(200).send("Error handled");
   }
+
+  res.status(200).send("OK");
 };
-
-async function sendMessage(chatId, text) {
-  await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
-  });
-}
-
-async function sendFile(chatId, fileId, type, caption) {
-  const endpoint = type === "photo" ? "sendPhoto" : "sendDocument";
-  const body = { chat_id: chatId, caption, parse_mode: "HTML" };
-  body[type] = fileId;
-
-  await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/${endpoint}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
