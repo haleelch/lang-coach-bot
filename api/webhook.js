@@ -35,7 +35,7 @@ const SECTIONS = {
   },
   notes: {
     title: "📝 Secret Notes & IDs",
-    help: "✍️ Type anything to add a note (first line = title).\n🔢 Tap a number to open.",
+    help: "✍️ Type any text to add a note, then I'll ask for a title.\n🔢 Tap a number to open and edit.",
   },
   money: {
     title: "💰 Money Tracker",
@@ -151,18 +151,6 @@ function itemTitle(key, it) {
   return it.title || "Untitled";
 }
 
-// Any text can be a note: first line = title, rest = content
-function parseNote(text) {
-  const lines = text.split("\n");
-  if (lines.length > 1) {
-    return { title: lines[0].trim().slice(0, 80), content: lines.slice(1).join("\n").trim() };
-  }
-  const m = text.match(/^(.{1,80}?)\s+-\s+(.+)$/);
-  if (m) return { title: m[1].trim(), content: m[2].trim() };
-  if (text.length > 40) return { title: text.slice(0, 40).trim() + "…", content: text };
-  return { title: text, content: "" };
-}
-
 // "Name give 500" / "Name get ₹1,000"
 function parseMoney(text) {
   const m = text.match(/^(.+?)\s+(give|get)\s*₹?\s*([\d,]+(?:\.\d+)?)\s*$/i);
@@ -259,21 +247,24 @@ async function showItem(chatId, s, key, id, page) {
   if (key === "notes") {
     text = `<b>${esc(it.title || "Untitled")}</b>${it.content ? "\n\n" + esc(String(it.content).slice(0, 3500)) : ""}\n\n📅 ${esc(it.date || "")}`;
     rows.push([
-      { text: "✏️ Edit", callback_data: `e:${key}:${id}:${page}` },
-      { text: "🗑 Delete", callback_data: `d:${key}:${id}:${page}` },
+      { text: "✏️ Title", callback_data: `e:${key}:${id}:${page}:title` },
+      { text: "✏️ Content", callback_data: `e:${key}:${id}:${page}:content` },
     ]);
+    rows.push([{ text: "🗑 Delete", callback_data: `d:${key}:${id}:${page}` }]);
   } else if (key === "money") {
     text = `<b>${esc(moneyLine(it))}</b>\n${it.settled ? "✅ Settled" : "⏳ Pending"}\n\n📅 ${esc(it.date || "")}`;
     rows.push([
       { text: it.settled ? "↩️ Reopen" : "✅ Mark settled", callback_data: `s:${key}:${id}:${page}` },
-      { text: "🗑 Delete", callback_data: `d:${key}:${id}:${page}` },
+      { text: "✏️ Edit", callback_data: `e:${key}:${id}:${page}:all` },
     ]);
+    rows.push([{ text: "🗑 Delete", callback_data: `d:${key}:${id}:${page}` }]);
   } else {
     text = `<b>${esc(it.title || "Untitled")}</b>\n\n📅 ${esc(it.date || "")}`;
     rows.push([
       { text: "📤 Send file", callback_data: `f:${key}:${id}:${page}` },
-      { text: "🗑 Delete", callback_data: `d:${key}:${id}:${page}` },
+      { text: "✏️ Rename", callback_data: `e:${key}:${id}:${page}:title` },
     ]);
+    rows.push([{ text: "🗑 Delete", callback_data: `d:${key}:${id}:${page}` }]);
   }
   rows.push([{ text: "⬅️ Back", callback_data: `p:${key}:${page}` }]);
   await showPanel(chatId, s, text, { inline_keyboard: rows });
@@ -290,6 +281,283 @@ async function storeFile(chatId, s, p, title) {
 
 async function handleUpdate(update, chatId, s) {
   const now = Date.now();
+  const cb = update.callback_query;
+  const msg = update.message;
+  const unlocked = s.unlocked && now - (s.last || 0) < AUTO_LOCK_MS;
+
+  // ===== LOCKED =====
+  if (!unlocked) {
+    if (cb) {
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "🔒 Locked. Send your PIN.", show_alert: true });
+      return s;
+    }
+    // Whatever was typed (PIN or wrong PIN) is removed from chat immediately
+    await del(chatId, msg.message_id);
+    await wipe(chatId, s); // old session leftovers disappear
+
+    const text = (msg.text || "").trim();
+    if (text === SECRET_PIN) {
+      const n = { unlocked: true, last: now, trash: [] };
+      await showPanel(chatId, n, WELCOME, MAIN_MENU);
+      return n;
+    }
+    const id = await send(chatId, "🔒 <b>Access Locked!</b>\nSend your 4-digit PIN to continue:");
+    return { unlocked: false, trash: id ? [id] : [] };
+  }
+
+  // ===== UNLOCKED =====
+  s.last = now;
+  s.trash = s.trash || [];
+
+  // --- menu buttons ---
+  if (cb) {
+    await tg("answerCallbackQuery", { callback_query_id: cb.id });
+    s.menuId = cb.message.message_id;
+    const d = cb.data;
+    const [op, key, a, b, c] = d.split(":");
+    s.pending = null;
+    if (op !== "e") s.editing = null;
+
+    if (d === "menu_home") {
+      s.mode = null;
+      await showPanel(chatId, s, WELCOME, MAIN_MENU);
+    } else if (d.startsWith("menu_")) {
+      const k = d.slice(5);
+      if (SECTIONS[k]) {
+        s.mode = k;
+        await showList(chatId, s, k, 0);
+      }
+    } else if (SECTIONS[key]) {
+      s.mode = key;
+      const page = Number(op === "p" ? a : b) || 0;
+
+      if (op === "p") {
+        await showList(chatId, s, key, page);
+      } else if (op === "o") {
+        await showItem(chatId, s, key, a, page);
+      } else if (op === "e") {
+        s.editing = { key, id: a, page, field: c };
+        const what =
+          c === "content"
+            ? "new <b>content</b>"
+            : c === "all"
+              ? "corrected entry, e.g. <code>Name give 500</code>"
+              : "new <b>title</b>";
+        await showPanel(chatId, s, `✏️ Send the ${what}:`, {
+          inline_keyboard: [[{ text: "Cancel", callback_data: `o:${key}:${a}:${page}` }]],
+        });
+      } else if (op === "d") {
+        const it = await dbGet(`${NODE[key]}/${a}`);
+        if (it) {
+          await showPanel(chatId, s, `🗑 Delete <b>${esc(itemTitle(key, it))}</b>?\nThis cannot be undone.`, {
+            inline_keyboard: [
+              [
+                { text: "🗑 Yes, delete", callback_data: `y:${key}:${a}:${page}` },
+                { text: "Cancel", callback_data: `o:${key}:${a}:${page}` },
+              ],
+            ],
+          });
+        } else {
+          await showList(chatId, s, key, page);
+        }
+      } else if (op === "y") {
+        await dbDelete(`${NODE[key]}/${a}`);
+        await showList(chatId, s, key, page, "🗑 Deleted");
+      } else if (op === "s") {
+        const it = await dbGet(`${NODE[key]}/${a}`);
+        if (it) await dbPatch(`${NODE[key]}/${a}`, { settled: !it.settled });
+        await showItem(chatId, s, key, a, page);
+      } else if (op === "f") {
+        const it = await dbGet(`${NODE[key]}/${a}`);
+        if (it && it.fileId) {
+          const mid = await sendFile(chatId, it.fileId, it.fileType, `📄 <b>${esc(it.title || "")}</b>`);
+          if (mid) s.trash.push(mid);
+        }
+      }
+    }
+    return s;
+  }
+
+  if (!msg) return s;
+  const text = (msg.text || "").trim();
+  const lower = text.toLowerCase();
+
+  // --- /lock ---
+  if (lower === "/lock") {
+    await del(chatId, msg.message_id);
+    await wipe(chatId, s);
+    const id = await send(chatId, "🔒 <b>Bot locked successfully!</b>");
+    return { unlocked: false, trash: id ? [id] : [] };
+  }
+
+  // --- /start or menu: fresh clean menu ---
+  if (text === "/start" || lower === "menu") {
+    await del(chatId, msg.message_id);
+    await wipe(chatId, s);
+    const n = { unlocked: true, last: now, trash: [] };
+    await showPanel(chatId, n, WELCOME, MAIN_MENU);
+    return n;
+  }
+
+  // --- file / photo upload ---
+  if (msg.document || msg.photo) {
+    const fileType = msg.document ? "document" : "photo";
+    const fileId = msg.document ? msg.document.file_id : msg.photo[msg.photo.length - 1].file_id;
+    const caption = (msg.caption || "").trim();
+
+    let category = s.mode === "library" ? "library" : "certificates";
+    let title = caption;
+    if (/^(kitab:|book:)/i.test(caption)) {
+      category = "library";
+      title = caption.replace(/^(kitab:|book:)/i, "").trim();
+    }
+
+    await del(chatId, msg.message_id); // upload disappears from chat
+
+    if (!title) {
+      s.pending = { fileId, fileType, category };
+      await showPanel(chatId, s, "📎 File received.\n\n✏️ Now type a <b>name</b> for it:", BACK);
+      return s;
+    }
+    await storeFile(chatId, s, { fileId, fileType, category }, title);
+    return s;
+  }
+
+  if (!text) return s;
+
+  // --- name for a file that was sent without caption ---
+  if (s.pending) {
+    await del(chatId, msg.message_id);
+    const p = s.pending;
+    s.pending = null;
+    if (p.kind === "note") {
+      const title = text.slice(0, 80);
+      await dbPost("notes", { title, content: p.content, date: today() });
+      s.mode = "notes";
+      await showList(chatId, s, "notes", 0, `✅ Saved: <b>${esc(title)}</b>`);
+      return s;
+    }
+    await storeFile(chatId, s, p, text);
+    return s;
+  }
+
+  // --- edit an existing note ---
+  if (s.editing) {
+    await del(chatId, msg.message_id);
+    const ed = s.editing;
+    const k = ed.key || "notes";
+    s.editing = null;
+    if (ed.field === "all") {
+      const rec = parseMoney(text);
+      if (!rec) {
+        s.editing = ed;
+        await showPanel(chatId, s, "⚠️ Format: <code>Name give 500</code> or <code>Name get 500</code>\n\nTry again:", {
+          inline_keyboard: [[{ text: "Cancel", callback_data: `o:${k}:${ed.id}:${ed.page}` }]],
+        });
+        return s;
+      }
+      await dbPatch(`${NODE[k]}/${ed.id}`, rec);
+    } else {
+      await dbPatch(`${NODE[k]}/${ed.id}`, { [ed.field]: ed.field === "title" ? text.slice(0, 80) : text });
+    }
+    await showItem(chatId, s, k, ed.id, ed.page);
+    return s;
+  }
+
+  // --- add note (any text) ---
+  if (s.mode === "notes" || lower.startsWith("note:")) {
+    await del(chatId, msg.message_id);
+    s.mode = "notes";
+    const body = text.replace(/^note:/i, "").trim();
+    if (!body) {
+      await showList(chatId, s, "notes", 0, "⚠️ Type some text to save.");
+      return s;
+    }
+    s.pending = { kind: "note", content: body };
+    await showPanel(chatId, s, "✏️ Now type a <b>title</b> for this note:", {
+      inline_keyboard: [[{ text: "Cancel", callback_data: "menu_notes" }]],
+    });
+    return s;
+  }
+
+  // --- add money record: "Name give 500" / "Name get 500" ---
+  if (s.mode === "money" || lower.startsWith("debt:")) {
+    await del(chatId, msg.message_id);
+    s.mode = "money";
+    const rec = parseMoney(text.replace(/^debt:/i, "").trim());
+    if (!rec) {
+      await showList(chatId, s, "money", 0, "⚠️ Format: <code>Name give 500</code> or <code>Name get 500</code>");
+      return s;
+    }
+    await dbPost("debts", { ...rec, settled: false, date: today() });
+    await showList(chatId, s, "money", 0, `✅ Saved: <b>${esc(moneyLine(rec))}</b>`);
+    return s;
+  }
+
+  // --- search / ask (certificates, library, or no section selected) ---
+  s.trash.push(msg.message_id); // query + answer get wiped on lock / next unlock
+
+  const [certs, books, notes, debts, reminders] = await Promise.all(
+    ["certificates", "library", "notes", "debts", "reminders"].map(async (k) => {
+      const r = await fetch(`${DB_URL}/${k}.json`);
+      return Object.values((await r.json()) || {});
+    })
+  );
+  const allFiles = [...certs, ...books];
+
+  // Direct match inside notes (title + content): show the full text, no AI summary
+  const q = text.toLowerCase();
+  const tokens = q.split(/\s+/).filter(Boolean);
+  const fileHit = allFiles.some((f) => (f.title || "").toLowerCase().includes(q));
+  const noteHits = fileHit
+    ? []
+    : notes.filter((n) => {
+        const hay = `${n.title || ""} ${n.content || ""}`.toLowerCase();
+        return tokens.every((t) => hay.includes(t));
+      });
+  if (noteHits.length) {
+    const shown = noteHits
+      .slice(0, 5)
+      .map((n) => {
+        const c = String(n.content || "");
+        return `📝 <b>${esc(n.title || "Untitled")}</b>${c ? "\n" + esc(c.slice(0, 600)) + (c.length > 600 ? "…" : "") : ""}`;
+      })
+      .join("\n\n");
+    const more = noteHits.length > 5 ? `\n\n…and ${noteHits.length - 5} more. Type more words to narrow down.` : "";
+    const hitId = await send(chatId, shown + more);
+    if (hitId) s.trash.push(hitId);
+    s.trash = s.trash.slice(-100);
+    return s;
+  }
+
+  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  const prompt = `
+  You are Haleel's personal assistant & digital locker bot working entirely inside Telegram chat.
+  Here is Haleel's saved data from Firebase:
+  - Saved Files (Certificates & Kitabs): ${JSON.stringify(allFiles.map((f) => f.title))}
+  - Secret Notes & IDs: ${JSON.stringify(notes)}
+  - Money / Debts: ${JSON.stringify(debts)}
+  - Reminders: ${JSON.stringify(reminders)}
+
+  User message: "${text}"
+
+  STRICT RULES:
+  1. If the user is asking for a saved certificate, document, or kitab/book from the "Saved Files" list, reply ONLY with: SEND_FILE:<exact_title_from_list>
+  2. If the user is asking about a saved note, ID, password, money/debt calculation, or reminder, answer clearly and accurately using the data above.
+  3. Otherwise, reply helpfully and concisely as Haleel's smart personal staff.
+  `;
+
+  const result = await model.generateContent(prompt);
+  const aiReply = result.response.text().trim();
+
+  let outId;
+  if (aiReply.startsWith("SEND_FILE:")) {
+    const target = aiReply.replace("SEND_FILE:", "").trim().toLowerCase();
+    const found = allFiles.find((f) => f.title.toLowerCase() === target || f.title.toLowerCase().includes(target));
+    if (found) {
+      outId = await sendFile(chatId, found.fileId, found.fileType, `📄 Here is your <b>${esc(found.title)}</b>`);
+    } else {
+      outId = await send(chatId, "⚠️ File nate.now();
   const cb = update.callback_query;
   const msg = update.message;
   const unlocked = s.unlocked && now - (s.last || 0) < AUTO_LOCK_MS;
