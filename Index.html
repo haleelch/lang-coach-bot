@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fest Collection</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+:root{--blue:#2437e8;--soft:#e8ebff;--ink:#16193a;--mute:#6b7194}
+body{background:#f4f6fb;color:var(--ink);font-family:'Plus Jakarta Sans',system-ui,sans-serif}
+.card{background:#fff;border-radius:1rem;padding:1rem;box-shadow:0 1px 3px rgba(22,25,58,.06)}
+.blue{background:var(--blue);color:#fff}
+.btn{border-radius:.7rem;padding:.6rem 1rem;font-weight:700;font-size:.9rem;transition:transform .15s,opacity .15s}
+.btn:active{transform:scale(.97)}
+.btn-p{background:var(--blue);color:#fff}
+.btn-s{background:var(--soft);color:var(--blue)}
+.btn-d{background:#ffe5e8;color:#c4162c}
+.inp{width:100%;border:1.5px solid #dfe3f5;border-radius:.7rem;padding:.65rem .8rem;background:#fff;font-size:1rem}
+.inp:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px var(--soft)}
+.chip{font-size:.75rem;font-weight:700;border-radius:999px;padding:.15rem .6rem;background:var(--soft);color:var(--blue)}
+.mute{color:var(--mute)}
+.nav a{display:flex;align-items:center;gap:.6rem;padding:.65rem .8rem;border-radius:.7rem;font-weight:600;color:var(--mute)}
+.nav a.on{background:var(--blue);color:#fff}
+.pop{animation:pop .22s ease both}@keyframes pop{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="md:flex min-h-screen">
+  <aside class="hidden md:flex flex-col w-56 bg-white p-4 gap-1 sticky top-0 h-screen shrink-0">
+    <p class="font-extrabold text-xl mb-4" style="color:var(--blue)">FestFund</p>
+    <p class="text-xs mute font-semibold px-2 mb-1">General</p>
+    <nav id="sideNav" class="nav flex flex-col gap-1"></nav>
+  </aside>
+
+  <div class="flex-1 min-w-0">
+    <header class="flex items-center justify-between gap-2 px-4 md:px-6 py-3 bg-white md:bg-transparent sticky top-0 z-30">
+      <h1 id="pageTitle" class="font-extrabold text-lg"></h1>
+      <button id="adminBtn" class="btn btn-s">Admin Login</button>
+    </header>
+    <main id="view" class="px-4 md:px-6 pt-3 pb-28 md:pb-10 max-w-5xl"></main>
+  </div>
+</div>
+
+<nav id="botNav" class="nav md:hidden fixed bottom-0 inset-x-0 bg-white flex justify-around p-2 z-40 shadow-[0_-2px_10px_rgba(22,25,58,.08)]"></nav>
+
+<!-- Student modal -->
+<div id="studentModal" class="fixed inset-0 bg-black/50 hidden items-end sm:items-center justify-center p-3 z-50">
+  <form id="studentForm" class="card pop w-full max-w-md space-y-3 max-h-[92vh] overflow-y-auto">
+    <h3 id="stTitle" class="text-xl font-extrabold">Create your page</h3>
+    <input id="s_name" class="inp" placeholder="Your name" required>
+    <input id="s_place" class="inp" placeholder="Place">
+    <input id="s_phone" class="inp" type="tel" inputmode="tel" placeholder="Contact number">
+    <div>
+      <input id="s_pin" class="inp" inputmode="numeric" maxlength="4" placeholder="4-digit PIN" required>
+      <p class="text-xs mute mt-1">Only you can add amounts to your page with this PIN. Remember it.</p>
+    </div>
+    <div class="flex gap-2"><button type="button" data-act="close" data-m="studentModal" class="btn btn-s flex-1">Cancel</button><button class="btn btn-p flex-1">Save</button></div>
+  </form>
+</div>
+
+<!-- Transaction modal -->
+<div id="txModal" class="fixed inset-0 bg-black/50 hidden items-end sm:items-center justify-center p-3 z-50">
+  <form id="txForm" class="card pop w-full max-w-md space-y-3">
+    <h3 id="txTitle" class="text-xl font-extrabold">Add amount</h3>
+    <div class="grid grid-cols-2 gap-2">
+      <div><label class="text-sm font-semibold">Google Pay ₹</label><input id="t_gpay" class="inp" type="number" min="0" inputmode="numeric" placeholder="0"></div>
+      <div><label class="text-sm font-semibold">Cash ₹</label><input id="t_cash" class="inp" type="number" min="0" inputmode="numeric" placeholder="0"></div>
+    </div>
+    <input id="t_note" class="inp" placeholder="Donor name or note (optional)">
+    <p class="text-lg font-extrabold">Total: <span id="t_tot">₹0</span></p>
+    <div class="flex gap-2"><button type="button" data-act="close" data-m="txModal" class="btn btn-s flex-1">Cancel</button><button class="btn btn-p flex-1">Save amount</button></div>
+  </form>
+</div>
+
+<!-- PIN modal -->
+<div id="pinModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center p-3 z-50">
+  <form id="pinForm" class="card pop w-full max-w-sm space-y-3">
+    <h3 class="text-xl font-extrabold">Enter your PIN</h3>
+    <input id="p_pin" class="inp" type="password" inputmode="numeric" maxlength="4" placeholder="4-digit PIN" required>
+    <p id="pinErr" class="text-sm font-semibold hidden" style="color:#c4162c">Wrong PIN. Try again.</p>
+    <div class="flex gap-2"><button type="button" data-act="close" data-m="pinModal" class="btn btn-s flex-1">Cancel</button><button class="btn btn-p flex-1">Unlock</button></div>
+  </form>
+</div>
+
+<!-- Admin login modal -->
+<div id="loginModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center p-3 z-50">
+  <form id="loginForm" class="card pop w-full max-w-sm space-y-3">
+    <h3 class="text-xl font-extrabold">Admin login</h3>
+    <input id="a_pw" type="password" class="inp" placeholder="Password" required>
+    <p id="pwErr" class="text-sm font-semibold hidden" style="color:#c4162c">Wrong password. Try again.</p>
+    <div class="flex gap-2"><button type="button" data-act="close" data-m="loginModal" class="btn btn-s flex-1">Cancel</button><button class="btn btn-p flex-1">Login</button></div>
+  </form>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const LS = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d } catch { return d } };
+const put = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true } catch { alert('Storage full. Use a smaller file.'); return false } };
+const inr = n => '₹' + Number(n || 0).toLocaleString('en-IN');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const when = ts => new Date(ts).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+const initials = n => n.trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+
+let S = LS('fest2_students', []), T = LS('fest2_tx', []);
+let cfg = Object.assign({ pw: 'admin123', qr: '', pdf: '' }, LS('fest_cfg', {}));
+let admin = sessionStorage.getItem('fest_admin') === '1', editSid = null, editTid = null, txSid = null, pinSid = null;
+
+const saveData = () => put('fest2_students', S) && put('fest2_tx', T);
+const open = id => { const e = $('#' + id); e.classList.remove('hidden'); e.classList.add('flex') };
+const close = id => { const e = $('#' + id); e.classList.add('hidden'); e.classList.remove('flex') };
+const unlocked = sid => admin || sessionStorage.getItem('fest_u_' + sid) === '1';
+const sTotal = (sid, k) => T.filter(t => t.sid === sid).reduce((a, t) => a + (k ? t[k] : t.gpay + t.cash), 0);
+const ic = n => {
+  const p = {
+    home: '<path d="M3 11l9-8 9 8v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/>',
+    users: '<path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M21 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>',
+    heart: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 0 0 0-7.8z"/>'
+  };
+  return `<svg viewBox="0 0 24 24" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p[n]}</svg>`;
+};
+const NAV = [['home', 'Home', '#home'], ['users', 'Students', '#students'], ['heart', 'Donate', '#donate']];
+
+function blobUrl(d) {
+  const [h, b] = d.split(','), m = h.match(/:(.*?);/)[1], a = atob(b), u = new Uint8Array(a.length);
+  for (let i = 0; i < a.length; i++) u[i] = a.charCodeAt(i);
+  return URL.createObjectURL(new Blob([u], { type: m }));
+}
+
+/* ---------- views ---------- */
+function viewHome() {
+  const g = T.reduce((a, t) => a + t.gpay, 0), c = T.reduce((a, t) => a + t.cash, 0), tot = g + c;
+  const pct = tot ? Math.round(g / tot * 100) : 0;
+  const donut = tot ? `conic-gradient(var(--blue) 0 ${pct}%, #a9b4ff ${pct}% 100%)` : '#e6e8f2';
+  const top = S.map(s => ({ s, t: sTotal(s.id) })).filter(x => x.t > 0).sort((a, b) => b.t - a.t).slice(0, 5);
+  const recent = [...T].sort((a, b) => b.ts - a.ts).slice(0, 6);
+  const medals = ['🥇', '🥈', '🥉'];
+  return `
+  <div class="blue rounded-2xl p-4 flex items-center justify-between gap-3 mb-4">
+    <p class="font-bold text-lg leading-snug">Save our students with your donation!</p>
+    <a href="#donate" class="btn bg-white shrink-0" style="color:var(--blue)">Donate now</a>
+  </div>
+  <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+    <div class="blue rounded-2xl p-4 col-span-2 md:col-span-1">
+      <p class="text-sm opacity-90">Total collected</p>
+      <p class="text-3xl font-extrabold mt-1">${inr(tot)}</p>
+      <p class="text-xs opacity-90 mt-1">${T.length} transactions from ${S.length} students</p>
+    </div>
+    <div class="card"><p class="text-sm mute">Google Pay</p><p class="text-2xl font-extrabold mt-1" style="color:var(--blue)">${inr(g)}</p></div>
+    <div class="card"><p class="text-sm mute">Cash</p><p class="text-2xl font-extrabold mt-1" style="color:var(--blue)">${inr(c)}</p></div>
+  </div>
+  <div class="grid md:grid-cols-2 gap-4 mb-4">
+    <div class="card"><h2 class="font-extrabold mb-3">Top collectors</h2>
+      ${top.length ? top.map((x, i) => `<a href="#s/${x.s.id}" class="flex items-center justify-between py-2 border-b border-slate-100 last:border-0">
+        <span class="font-semibold">${medals[i] || (i + 1) + '.'} ${esc(x.s.name)}</span><span class="font-extrabold">${inr(x.t)}</span></a>`).join('')
+        : '<p class="text-sm mute">No amounts yet. Open Students and create your page to start.</p>'}
+    </div>
+    <div class="card"><h2 class="font-extrabold mb-3">Payment split</h2>
+      <div class="flex items-center gap-5">
+        <div class="w-28 h-28 rounded-full grid place-items-center shrink-0" style="background:${donut}"><div class="w-20 h-20 rounded-full bg-white grid place-items-center font-extrabold">${tot ? pct + '%' : '–'}</div></div>
+        <div class="space-y-2 text-sm font-semibold">
+          <p><span class="inline-block w-3 h-3 rounded-full mr-2" style="background:var(--blue)"></span>Google Pay ${tot ? pct + '%' : ''}</p>
+          <p><span class="inline-block w-3 h-3 rounded-full mr-2" style="background:#a9b4ff"></span>Cash ${tot ? 100 - pct + '%' : ''}</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="card"><h2 class="font-extrabold mb-3">Recent transactions</h2>
+    ${recent.length ? recent.map(t => { const s = S.find(x => x.id === t.sid); return `<a href="#s/${t.sid}" class="flex items-center justify-between py-2 border-b border-slate-100 last:border-0">
+      <span><span class="font-semibold block">${esc(s?.name || 'Unknown')}</span><span class="text-xs mute">${when(t.ts)}${t.note ? ' · ' + esc(t.note) : ''}</span></span>
+      <span class="font-extrabold">${inr(t.gpay + t.cash)}</span></a>` }).join('') : '<p class="text-sm mute">No transactions yet.</p>'}
+  </div>`;
+}
+
+function viewStudents() {
+  const rows = S.map(s => ({ s, t: sTotal(s.id) })).sort((a, b) => b.t - a.t || a.s.name.localeCompare(b.s.name));
+  return `
+  <div class="flex items-center justify-between gap-2 mb-3">
+    <p class="mute text-sm">${S.length} students</p>
+    <button data-act="add-student" class="btn btn-p">+ Create my page</button>
+  </div>
+  <input id="search" class="inp mb-3" placeholder="Search name or place">
+  <div id="stList" class="space-y-2">${stRows(rows, '')}</div>`;
+}
+function stRows(rows, q) {
+  rows = rows.filter(r => !q || (r.s.name + ' ' + r.s.place).toLowerCase().includes(q));
+  return rows.length ? rows.map(({ s, t }) => `
+    <a href="#s/${s.id}" class="card flex items-center gap-3">
+      <span class="w-11 h-11 rounded-full grid place-items-center font-extrabold shrink-0" style="background:var(--soft);color:var(--blue)">${esc(initials(s.name))}</span>
+      <span class="min-w-0 flex-1"><span class="font-bold block truncate">${esc(s.name)}</span><span class="text-sm mute block truncate">${esc(s.place) || 'No place added'}</span></span>
+      <span class="font-extrabold">${inr(t)}</span>
+    </a>`).join('') : '<p class="card text-sm mute">No students found. Tap Create my page to add yours.</p>';
+}
+
+function viewStudent(id) {
+  const s = S.find(x => x.id === id);
+  if (!s) return '<div class="card"><p>Page not found.</p><a href="#students" class="btn btn-p inline-block mt-3">Back to students</a></div>';
+  const mine = unlocked(id), list = T.filter(t => t.sid === id).sort((a, b) => b.ts - a.ts);
+  return `
+  <a href="#students" class="text-sm font-semibold" style="color:var(--blue)">‹ All students</a>
+  <div class="blue rounded-2xl p-4 mt-2 mb-3">
+    <div class="flex items-center gap-3">
+      <span class="w-12 h-12 rounded-full grid place-items-center font-extrabold bg-white" style="color:var(--blue)">${esc(initials(s.name))}</span>
+      <div class="min-w-0"><p class="font-extrabold text-lg truncate">${esc(s.name)}</p>
+        <p class="text-sm opacity-90 truncate">${esc(s.place) || 'No place added'}${mine && s.phone ? ' · ' + esc(s.phone) : ''}</p></div>
+    </div>
+    <p class="text-sm opacity-90 mt-4">Collected</p>
+    <p class="text-3xl font-extrabold">${inr(sTotal(id))}</p>
+  </div>
+  <div class="grid grid-cols-2 gap-3 mb-3">
+    <div class="card"><p class="text-sm mute">Google Pay</p><p class="text-xl font-extrabold" style="color:var(--blue)">${inr(sTotal(id, 'gpay'))}</p></div>
+    <div class="card"><p class="text-sm mute">Cash</p><p class="text-xl font-extrabold" style="color:var(--blue)">${inr(sTotal(id, 'cash'))}</p></div>
+  </div>
+  <div class="flex flex-wrap gap-2 mb-4">
+    ${mine ? `<button data-act="add-tx" data-id="${id}" class="btn btn-p">+ Add amount</button><button data-act="edit-student" data-id="${id}" class="btn btn-s">Edit profile</button>`
+           : `<button data-act="unlock" data-id="${id}" class="btn btn-p">Unlock to add amount</button><p class="text-xs mute self-center">Only ${esc(s.name)} can add amounts here.</p>`}
+    ${admin ? `<button data-act="del-student" data-id="${id}" class="btn btn-d">Delete page</button>` : ''}
+  </div>
+  <div class="card"><h2 class="font-extrabold mb-3">Transactions</h2>
+    ${list.length ? list.map(t => `
+      <div class="py-3 border-b border-slate-100 last:border-0">
+        <div class="flex items-center justify-between gap-2">
+          <div class="min-w-0"><p class="font-semibold truncate">${esc(t.note) || 'Donation'}</p><p class="text-xs mute">${when(t.ts)}</p></div>
+          <p class="font-extrabold">${inr(t.gpay + t.cash)}</p>
+        </div>
+        <div class="flex flex-wrap items-center gap-2 mt-2">
+          ${t.gpay ? `<span class="chip">GPay ${inr(t.gpay)}</span>` : ''}${t.cash ? `<span class="chip" style="background:#e3f7e8;color:#12713a">Cash ${inr(t.cash)}</span>` : ''}
+          ${admin ? `<span class="ml-auto flex gap-2"><button data-act="edit-tx" data-id="${t.id}" class="btn btn-s py-1">Edit</button><button data-act="del-tx" data-id="${t.id}" class="btn btn-d py-1">Delete</button></span>` : ''}
+        </div>
+      </div>`).join('') : `<p class="text-sm mute">No transactions yet.${mine ? ' Tap Add amount to record your first collection.' : ''}</p>`}
+  </div>`;
+}
+
+function viewDonate() {
+  return `
+  <div class="card text-center mb-4">
+    <h2 class="font-extrabold text-lg">Donate to the fest fund</h2>
+    <p class="text-sm mute mb-3">Scan the QR with any UPI app to pay.</p>
+    ${cfg.qr ? `<img src="${cfg.qr}" alt="Payment QR code" class="w-64 max-w-full mx-auto rounded-xl border border-slate-200 p-2 bg-white">` : '<p class="text-sm mute py-6">QR code not added yet.</p>'}
+    ${cfg.pdf ? '<button data-act="pdf" class="btn btn-p mt-3">Open payment PDF</button>' : ''}
+  </div>
+  ${admin ? `<div class="card space-y-3">
+    <h2 class="font-extrabold">Admin tools</h2>
+    <div><label class="text-sm font-semibold">Payment QR image</label><input id="qrFile" type="file" accept="image/*" class="inp mt-1"></div>
+    <div><label class="text-sm font-semibold">Payment PDF (max 2 MB)</label><input id="pdfFile" type="file" accept="application/pdf" class="inp mt-1"></div>
+    <div><label class="text-sm font-semibold">Admin password</label>
+      <div class="flex gap-2 mt-1"><input id="newPw" class="inp" placeholder="New password"><button data-act="pw" class="btn btn-p">Change</button></div></div>
+    <div class="flex gap-2"><button data-act="export" class="btn btn-s">Export backup</button>
+      <label class="btn btn-s cursor-pointer">Import backup<input id="impFile" type="file" accept="application/json" class="hidden"></label></div>
+  </div>` : ''}`;
+}
+
+/* ---------- router ---------- */
+function render() {
+  const h = location.hash || '#home';
+  let key = 'home', title = 'Overview', html;
+  if (h.startsWith('#s/')) { key = 'users'; title = 'Student'; html = viewStudent(h.slice(3)); }
+  else if (h === '#students') { key = 'users'; title = 'Students'; html = viewStudents(); }
+  else if (h === '#donate') { key = 'heart'; title = 'Donate'; html = viewDonate(); }
+  else html = viewHome();
+  $('#view').innerHTML = html;
+  $('#pageTitle').textContent = title;
+  const links = NAV.map(([i, l, href]) => `<a href="${href}" class="${i === key ? 'on' : ''} md:flex-row flex-col text-xs md:text-base !gap-0.5 md:!gap-2 items-center">${ic(i)}<span>${l}</span></a>`).join('');
+  $('#sideNav').innerHTML = links; $('#botNav').innerHTML = links;
+  $('#adminBtn').textContent = admin ? 'Logout' : 'Admin Login';
+  const sr = $('#search');
+  if (sr) sr.oninput = () => $('#stList').innerHTML = stRows(S.map(s => ({ s, t: sTotal(s.id) })).sort((a, b) => b.t - a.t || a.s.name.localeCompare(b.s.name)), sr.value.trim().toLowerCase());
+}
+window.addEventListener('hashchange', () => { render(); scrollTo(0, 0) });
+
+/* ---------- actions ---------- */
+const calc = () => $('#t_tot').textContent = inr((+$('#t_gpay').value || 0) + (+$('#t_cash').value || 0));
+$('#t_gpay').oninput = calc; $('#t_cash').oninput = calc;
+
+function openStudent(s) {
+  editSid = s ? s.id : null;
+  $('#stTitle').textContent = s ? 'Edit profile' : 'Create your page';
+  $('#s_name').value = s?.name || ''; $('#s_place').value = s?.place || '';
+  $('#s_phone').value = s?.phone || ''; $('#s_pin').value = s?.pin || '';
+  open('studentModal');
+}
+function openTx(sid, t) {
+  txSid = sid; editTid = t ? t.id : null;
+  $('#txTitle').textContent = t ? 'Edit amount' : 'Add amount';
+  $('#t_gpay').value = t?.gpay || ''; $('#t_cash').value = t?.cash || ''; $('#t_note').value = t?.note || '';
+  calc(); open('txModal');
+}
+
+document.body.addEventListener('click', e => {
+  const b = e.target.closest('[data-act]'); if (!b) return;
+  const id = b.dataset.id, a = b.dataset.act;
+  if (a === 'close') close(b.dataset.m);
+  else if (a === 'add-student') openStudent();
+  else if (a === 'edit-student') openStudent(S.find(s => s.id === id));
+  else if (a === 'del-student' && admin && confirm('Delete this page and all its transactions?')) {
+    S = S.filter(s => s.id !== id); T = T.filter(t => t.sid !== id); saveData(); location.hash = '#students';
+  }
+  else if (a === 'add-tx' && unlocked(id)) openTx(id);
+  else if (a === 'edit-tx' && admin) { const t = T.find(x => x.id === id); openTx(t.sid, t) }
+  else if (a === 'del-tx' && admin && confirm('Delete this transaction?')) { T = T.filter(t => t.id !== id); saveData(); render() }
+  else if (a === 'unlo
